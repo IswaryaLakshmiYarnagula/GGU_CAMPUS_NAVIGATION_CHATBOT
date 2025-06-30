@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify, render_template, send_file
 import re
 import speech_recognition as sr
@@ -7,7 +6,6 @@ import os
 import uuid
 import difflib
 import math
-from application import app as application  
 
 app = Flask(__name__)
 
@@ -52,7 +50,6 @@ campus_data = {
     "events ground": {"lat": 17.07154, "lng": 81.86830, "description": "Events and festival ground"},
     "lake": {"lat": 17.07146, "lng": 81.86981, "description": "Main campus lake"}
 }
-application = app
 
 # Create alias mapping
 alias_mapping = {}
@@ -63,7 +60,7 @@ for name, data in campus_data.items():
     alias_mapping[name.lower()] = name
 
 # Precompute all location names for fuzzy matching
-all_location_names = list(campus_data.keys()) + [alias for aliases in [data.get("aliases", []) for data in campus_data.values()] for alias in aliases]
+all_location_names = list(campus_data.keys()) + list(alias_mapping.keys())
 
 def find_location(location_str):
     """Find location in database using name or alias with fuzzy matching"""
@@ -103,21 +100,15 @@ def calculate_distance(start, end):
 def generate_directions(start, end):
     """Generate directions message with Google Maps link"""
     start_coords = f"{campus_data[start]['lat']},{campus_data[start]['lng']}"
-    start_name = start
-    
     end_coords = f"{campus_data[end]['lat']},{campus_data[end]['lng']}"
-    end_name = end
     
     maps_url = f"https://www.google.com/maps/dir/{start_coords}/{end_coords}"
-    
     distance = calculate_distance(start, end)
-    
-    # Add walking time estimate (4 km/h average walking speed)
     walking_time = distance / 67  # 67 meters per minute
     
     # Generate directions description
     description = (
-        f"🚶 Directions from {start_name.capitalize()} to {end_name.capitalize()}:\n"
+        f"🚶 Directions from {start.capitalize()} to {end.capitalize()}:\n"
         f"📍 Distance: Approximately {distance:.0f} meters\n"
         f"⏱️ Walking time: {max(1, int(walking_time))} minutes\n"
         f"🗺️ [Open in Google Maps]({maps_url})"
@@ -154,7 +145,7 @@ def process_message(user_message):
     try:
         # Check for help request
         if re.search(help_pattern, user_message):
-            response = (
+            return (
                 "🌟 I'm your campus navigation assistant! I can help with:\n"
                 "- Directions between locations (e.g., 'How to go from main block to library')\n"
                 "- Finding places (e.g., 'Where is the cafeteria?')\n"
@@ -162,25 +153,21 @@ def process_message(user_message):
                 "- Campus map with all locations\n"
                 "You can also use voice commands by clicking the microphone icon!"
             )
-            return response
         
         # Check for map request
         if re.search(map_pattern, user_message):
-            # Create Google Maps URL with all locations as markers
-            markers = "&markers=".join([f"{data['lat']},{data['lng']}" for data in campus_data.values()])
-            map_url = f"https://www.google.com/maps/dir/?api=1&destination={list(campus_data.values())[0]['lat']},{list(campus_data.values())[0]['lng']}&travelmode=walking&waypoints={markers}"
+            markers = "&markers=" + "|".join([f"{data['lat']},{data['lng']}" for data in campus_data.values()])
+            map_url = f"https://www.google.com/maps?{markers}&q=17.05973,81.86922"
             
-            response = (
+            return (
                 "🗺️ Here's the complete campus map:\n"
                 f"📍 [View Campus Map on Google Maps]({map_url})\n\n"
                 "Key locations include:\n"
-                "- " + "\n- ".join([name.capitalize() for name in campus_data.keys()][:10]) + "\n...and more!"
+                "- " + "\n- ".join([name.capitalize() for name in list(campus_data.keys())[:10]]) + "\n...and more!"
             )
-            return response
         
         # Check for location information request
-        info_match = re.search(info_pattern, user_message)
-        if info_match:
+        if info_match := re.search(info_pattern, user_message):
             loc_str = info_match.group(1).strip()
             location = find_location(loc_str)
             
@@ -190,7 +177,6 @@ def process_message(user_message):
                 response += f"- Description: {data['description']}\n"
                 if "hours" in data:
                     response += f"- Hours: {data['hours']}\n"
-                response += f"- Coordinates: {data['lat']}, {data['lng']}\n"
                 
                 # Find nearby locations
                 nearby = []
@@ -210,50 +196,44 @@ def process_message(user_message):
         
         # Check for "where am I" request
         if re.search(current_location_pattern, user_message):
-            response = (
+            return (
                 "📍 I can't determine your exact location, but here's the campus map:\n"
                 "🗺️ [View Campus Map on Google Maps](https://www.google.com/maps?q=17.05973,81.86922)\n\n"
                 "You can also ask:\n"
                 "- 'Directions to [place]' for navigation\n"
                 "- 'Where is [place]' to find a specific location"
             )
-            return response
         
         # Check for directions request patterns
         # 1. Standard "from A to B" pattern
-        from_to_match = re.search(from_to_pattern, user_message)
-        if from_to_match:
+        if from_to_match := re.search(from_to_pattern, user_message):
             start_str, end_str = from_to_match.groups()
             start = find_location(start_str)
             end = find_location(end_str)
         
         # 2. Simple "A to B" pattern
-        elif re.search(simple_directions_pattern, user_message):
-            match = re.search(simple_directions_pattern, user_message)
-            start_str, end_str = match.groups()
+        elif simple_match := re.search(simple_directions_pattern, user_message):
+            start_str, end_str = simple_match.groups()
             start = find_location(start_str)
             end = find_location(end_str)
         
         # 3. "To B" pattern (from current location)
-        elif re.search(to_pattern, user_message):
-            match = re.search(to_pattern, user_message)
-            end_str = match.group(1)
-            # Use gate as default starting point
-            start = "gate"
+        elif to_match := re.search(to_pattern, user_message):
+            end_str = to_match.group(1)
+            start = "gate"  # Default starting point
             end = find_location(end_str)
         
         # 4. Where pattern (single location query)
-        elif re.search(where_pattern, user_message):
-            match = re.search(where_pattern, user_message)
-            loc_str = match.group(1).strip()
+        elif where_match := re.search(where_pattern, user_message):
+            loc_str = where_match.group(1).strip()
             location = find_location(loc_str)
             if location and location in campus_data:
                 data = campus_data[location]
-                response = f"ℹ️ Information about {location.capitalize()}:\n"
+                response = f"📍 {location.capitalize()} is located at:\n"
                 response += f"- Description: {data['description']}\n"
                 if "hours" in data:
                     response += f"- Hours: {data['hours']}\n"
-                response += f"- Coordinates: {data['lat']}, {data['lng']}\n"
+                
                 # Nearby locations logic
                 nearby = []
                 for other_name, other_data in campus_data.items():
@@ -266,39 +246,35 @@ def process_message(user_message):
                     for name, dist in sorted(nearby, key=lambda x: x[1])[:3]:
                         response += f"- {name.capitalize()} ({dist:.0f}m)\n"
             else:
-                response = f"❌ Sorry, I couldn't find information about '{loc_str}'. Try asking about specific campus locations."
+                response = f"❌ Sorry, I couldn't find '{loc_str}'. Try asking about specific campus locations."
             return response
     
         # Generate directions if we have both points
         if start and end:
             if end not in campus_data:
-                response = f"❌ Sorry, I couldn't find '{end}' in campus locations."
-            elif start not in campus_data:
-                response = f"❌ Sorry, I couldn't find '{start}' in campus locations."
-            else:
-                response = generate_directions(start, end)
+                return f"❌ Sorry, I couldn't find '{end}' in campus locations."
+            if start not in campus_data:
+                return f"❌ Sorry, I couldn't find '{start}' in campus locations."
                 
-        else:  # No pattern matched
-            response = (
-                "🤔 I'm not sure what you're asking. I can help with:\n"
-                "- Directions (e.g., 'How to go from main block to library' or 'gate to library')\n"
-                "- Finding places (e.g., 'Where is the cafeteria?')\n"
-                "- Information about locations (e.g., 'Info about library')\n"
-                "- Campus map (say 'show map')\n"
-                "Try one of these or say 'help' for options."
-            )
+            return generate_directions(start, end)
+                
+        # No pattern matched
+        return (
+            "🤔 I'm not sure what you're asking. I can help with:\n"
+            "- Directions (e.g., 'How to go from main block to library')\n"
+            "- Finding places (e.g., 'Where is the cafeteria?')\n"
+            "- Information about locations\n"
+            "- Campus map (say 'show map')\n"
+            "Try one of these or say 'help' for options."
+        )
     
     except Exception as e:
-        response = f"❌ Sorry, I encountered an error: {str(e)}. Please try again."
-    
-    return response
+        return f"❌ Sorry, I encountered an error: {str(e)}. Please try again."
 
 def text_to_speech(text, lang='en'):
     """Convert text to speech and return the audio file path"""
-    # Create audio directory if not exists
     audio_dir = "audio_files"
-    if not os.path.exists(audio_dir):
-        os.makedirs(audio_dir)
+    os.makedirs(audio_dir, exist_ok=True)
     
     filename = f"{audio_dir}/response_{uuid.uuid4()}.mp3"
     tts = gTTS(text=text, lang=lang, slow=False)
@@ -306,63 +282,49 @@ def text_to_speech(text, lang='en'):
     return filename
 
 def speech_to_text(audio_file):
-    """Convert speech to text using Google Speech Recognition with enhanced settings"""
+    """Convert speech to text using Google Speech Recognition"""
     recognizer = sr.Recognizer()
-    recognizer.dynamic_energy_threshold = True
-    recognizer.pause_threshold = 0.8
     
     with sr.AudioFile(audio_file) as source:
         try:
-            # Adjust for ambient noise
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            recognizer.adjust_for_ambient_noise(source)
             audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data, language='en-IN')
-            return text
+            return recognizer.recognize_google(audio_data, language='en-IN')
         except sr.UnknownValueError:
             return "Could not understand audio"
-        except sr.RequestError as e:
-            return f"Speech recognition error: {e}"
+        except sr.RequestError:
+            return "Speech service error"
         except Exception as e:
-            return f"Audio processing error: {str(e)}"
+            return f"Error: {str(e)}"
 
 @app.route('/')
 def home():
-    """Render the chatbot interface"""
     return render_template('index.html')
 
 @app.route('/chat', methods=['POST'])
 def chat_handler():
-    """Handle text-based chat requests"""
     user_message = request.json['message']
     response = process_message(user_message)
     return jsonify({"response": response})
 
 @app.route('/voice', methods=['POST'])
 def voice_handler():
-    """Handle voice input and return voice response"""
     if 'audio' not in request.files:
-        return jsonify({"error": "No audio file provided"}), 400
+        return jsonify({"error": "No audio file"}), 400
         
     audio_file = request.files['audio']
     temp_dir = "temp_audio"
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
+    os.makedirs(temp_dir, exist_ok=True)
         
     temp_audio = f"{temp_dir}/input_{uuid.uuid4()}.wav"
     audio_file.save(temp_audio)
     
-    # Convert speech to text
     user_message = speech_to_text(temp_audio)
-    os.remove(temp_audio)  # Clean up temp file
+    os.remove(temp_audio)
     
-    # Process the message
     response_text = process_message(user_message)
-    
-    # Convert response to speech
     audio_filename = text_to_speech(response_text)
-    
-    # Return relative path without directory for client
-    audio_url = audio_filename.replace("audio_files/", "")
+    audio_url = os.path.basename(audio_filename)
     
     return jsonify({
         "user_message": user_message,
@@ -370,30 +332,25 @@ def voice_handler():
         "audio_url": f"/audio/{audio_url}"
     })
 
-@app.route('/audio/<path:filename>')
+@app.route('/audio/<filename>')
 def get_audio(filename):
-    """Serve generated audio files"""
     return send_file(f"audio_files/{filename}", mimetype='audio/mpeg')
 
 @app.route('/map')
 def campus_map():
-    """Return campus map data"""
     return jsonify(campus_data)
 
 if __name__ == '__main__':
-    # Create necessary directories
-    for dir in ["audio_files", "temp_audio"]:
-        if not os.path.exists(dir):
-            os.makedirs(dir)
+    # Create directories if needed
+    os.makedirs("audio_files", exist_ok=True)
+    os.makedirs("temp_audio", exist_ok=True)
     
-    # Clean up old audio files on startup
+    # Clean up old audio files
     for file in os.listdir('audio_files'):
         if file.endswith('.mp3'):
             try:
                 os.remove(f"audio_files/{file}")
-            except:
+            except OSError:
                 pass
                 
-    if __name__ == "__main__":
-        app.run()
-
+    app.run(debug=True)
