@@ -8,7 +8,7 @@ import urllib.parse
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'  # Needed for session management
-
+application = app
 # Structured campus data with coordinates
 campus_data = {
     "gate": {"lat": 17.05973, "lng": 81.86922, "description": "Main campus entrance"},
@@ -623,6 +623,132 @@ def process_special_queries(user_message):
 
     return None
 
+def process_message(user_message):
+    """Process user message with special handling for book/shopping queries"""
+    # First check for special queries
+    special_response = process_special_queries(user_message)
+    if special_response:
+        return special_response
+        
+    # Get language from session or detect
+    user_lang = session.get('user_lang', detect_language(user_message))
+    
+    # Patterns for different types of queries
+    from_to_pattern = r'(?:from|between)\s+(.+?)\s+(?:to|and)\s+(.+)'
+    to_pattern = r'(?:to|for|towards|near|reach|get to|go to)\s+(.+)'
+    where_pattern = r'(?:where(\'s| is)|find|locate|show me|how to get to|directions? to)\s+(.+)'
+    info_pattern = r'(?:info|information|details|about|tell me about)\s+(.+)'
+    help_pattern = r'(?:help|what can you do|options|features|commands|సహాయం|मदद)'
+    map_pattern = r'(?:map|campus map|whole map|complete map)'
+    simple_directions_pattern = r'(.+?)\s+to\s+(.+)'
+    current_location_pattern = r'(?:where am i|my location|current location)'
+    # Updated pattern to catch all college-related questions
+    general_college_pattern = r'(.*college.*|.*giet.*|.*university.*|.*about.*|.*details.*|.*information.*|.*tell me.*|.*describe.*)'
+    
+    start = None
+    end = None
+    
+    try:
+        # Check for help request
+        if re.search(help_pattern, user_message, re.IGNORECASE):
+            return get_help_response(user_lang)
+        
+        # Check for map request - IMPROVED RESPONSE
+        if re.search(map_pattern, user_message, re.IGNORECASE):
+            # Create Google Maps URL with all markers
+            markers = "&markers=" + "|".join([f"{data['lat']},{data['lng']}" for data in campus_data.values()])
+            map_url = f"https://www.google.com/maps?{markers}&q=17.05973,81.86922"
+            
+            # Create direct link to open in Google Maps app
+            direct_map_url = f"https://www.google.com/maps/dir//17.05973,81.86922"
+            
+            return (
+                "🗺️ Here's the complete campus map:\n"
+                f"📍 [View Campus Map on Google Maps]({map_url})\n"
+                f"📱 [Open in Google Maps App]({direct_map_url})\n\n"
+                "Key locations include:\n"
+                "- " + "\n- ".join([name.capitalize() for name in list(campus_data.keys())[:15]]) + "\n...and more!"
+            )
+        
+        # Check for location information request
+        if info_match := re.search(info_pattern, user_message, re.IGNORECASE):
+            loc_str = info_match.group(1).strip()
+            # Skip if it's a generic college question
+            if loc_str.lower() in ['college', 'university', 'giet', 'campus']:
+                return query_llama(user_message)
+                
+            location = find_location(loc_str)
+            
+            if location and location in campus_data:
+                # --- CORRECTION START ---
+                # When info is requested, provide full directions from the main gate
+                return generate_directions("gate", location)
+                # --- CORRECTION END ---
+            else:
+                response = f"❌ Sorry, I couldn't find information about '{loc_str}'"
+            return response
+        
+        # Check for "where am I" request
+        if re.search(current_location_pattern, user_message, re.IGNORECASE):
+            # Create Google Maps URL with all markers
+            markers = "&markers=" + "|".join([f"{data['lat']},{data['lng']}" for data in campus_data.values()])
+            map_url = f"https://www.google.com/maps?{markers}&q=17.05973,81.86922"
+            return (
+                "📍 I can't determine your exact location, but here's the campus map:\n"
+                f"🗺️ [View Campus Map on Google Maps]({map_url})\n\n"
+                "You can ask:\n"
+                "- 'Where is [place]' to find locations\n"
+                "- 'Directions to [place]' for navigation"
+            )
+        
+        # Check for "where is" or "directions to" request
+        if where_match := re.search(where_pattern, user_message, re.IGNORECASE):
+            # Handle different regex group positions
+            loc_str = where_match.group(2) if where_match.group(2) else where_match.group(1)
+            location = find_location(loc_str)
+            
+            if location and location in campus_data:
+                # --- CORRECTION START ---
+                # When a location is asked for, provide full directions from the main gate
+                return generate_directions("gate", location)
+                # --- CORRECTION END ---
+            else:
+                response = f"❌ Sorry, I couldn't find '{loc_str}'"
+            return response
+
+        # Check for general college questions AFTER specific location queries
+        if re.search(general_college_pattern, user_message, re.IGNORECASE):
+            return query_llama(user_message)
+
+        # Check for directions request patterns - IMPROVED HANDLING
+        if from_to_match := re.search(from_to_pattern, user_message, re.IGNORECASE):
+            start_str, end_str = from_to_match.groups()
+            start = find_location(start_str)
+            end = find_location(end_str)
+        elif simple_match := re.search(simple_directions_pattern, user_message, re.IGNORECASE):
+            start_str, end_str = simple_match.groups()
+            start = find_location(start_str)
+            end = find_location(end_str)
+        elif to_match := re.search(to_pattern, user_message, re.IGNORECASE):
+            end_str = to_match.group(1).strip()
+            start = "gate"  # Default to main gate as starting point
+            end = find_location(end_str)
+        
+        # Generate directions if we have both points
+        if start and end:
+            if end not in campus_data:
+                return f"❌ Sorry, I couldn't find '{end}'"
+            if start not in campus_data:
+                return f"❌ Sorry, I couldn't find '{start}'"
+            return generate_directions(start, end)
+                
+        # No pattern matched - use Llama
+        return query_llama(user_message)
+    
+    except Exception as e:
+        return f"❌ Sorry, I encountered an error: {str(e)}"
+    
+
 def detect_language(text):
     """Detect if text contains Telugu or Hindi characters"""
     # Telugu Unicode range: 0x0C00-0x0C7F
@@ -948,6 +1074,11 @@ def set_language():
         return jsonify({"status": "success", "language": lang})
     return jsonify({"status": "error", "message": "Invalid language"})
 
-if __name__ == '__main__':
+'''if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)'''
+
+
+
+if __name__ == "__main__":
+    application.run()
